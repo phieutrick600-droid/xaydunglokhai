@@ -140,7 +140,11 @@
                         <form id="form-project">
                             <div class="mb-2"><label>Mã Công Trình</label><input type="text" id="p-id" class="form-control" required></div>
                             <div class="mb-2"><label>Tên Công Trình</label><input type="text" id="p-name" class="form-control" required></div>
-                            <div class="mb-2"><label>Thuộc Mã Công Ty</label><input type="text" id="p-cid" class="form-control" placeholder="VD: CTY01" required></div>
+                            <div class="mb-2">
+                                <label for="p-cids">Các Công Ty Tham Gia</label>
+                                <select id="p-cids" class="form-select" multiple size="4" aria-describedby="p-cids-help"></select>
+                                <div id="p-cids-help" class="form-text">Giữ Ctrl (Windows) hoặc Command (Mac) để chọn nhiều công ty.</div>
+                            </div>
                             <div class="mb-2"><label>Địa Điểm</label><input type="text" id="p-loc" class="form-control"></div>
                             <div class="mb-2"><label>Chủ Đầu Tư</label><input type="text" id="p-owner" class="form-control"></div>
                             <div class="mb-2"><label>Trạng Thái</label><input type="text" id="p-status" class="form-control"></div>
@@ -156,7 +160,7 @@
                         <h5 class="card-title"><i class="fa-solid fa-table"></i> Danh Sách Công Trình</h5>
                         <table class="table table-hover mt-2">
                             <thead class="table-light">
-                                <tr><th>Mã CT</th><th>Tên Công Trình</th><th>Mã CTY</th><th>Địa Điểm</th><th>Chủ Đầu Tư</th><th>Trạng Thái</th><th>Thao Tác</th></tr>
+                                <tr><th>Mã CT</th><th>Tên Công Trình</th><th>Các Công Ty</th><th>Địa Điểm</th><th>Chủ Đầu Tư</th><th>Trạng Thái</th><th>Thao Tác</th></tr>
                             </thead>
                             <tbody id="tbl-project"></tbody>
                         </table>
@@ -407,13 +411,29 @@
 
     // --- CÔNG TRÌNH ---
     let projData = [];
-    function loadProject() {
-        fetch('/api/project').then(r=>r.json()).then(data=>{
+    async function loadProject() {
+        const [projectResponse, companyResponse] = await Promise.all([
+            fetch('/api/project'),
+            fetch('/api/company')
+        ]);
+        const data = await projectResponse.json();
+        compData = await companyResponse.json();
+        const companySelect = document.getElementById('p-cids');
+        companySelect.innerHTML = compData.map(c =>
+            `<option value="${c.ma_cty}">${c.ma_cty} - ${c.ten_cty}</option>`
+        ).join('');
+
+        {
             projData = data;
             let h = '';
             data.forEach(p=>{
+                const companyIds = p.ma_cty_list || (p.ma_cty ? [p.ma_cty] : []);
+                const companyLabels = companyIds.map(id => {
+                    const company = compData.find(c => c.ma_cty === id);
+                    return company ? `${company.ma_cty} - ${company.ten_cty}` : id;
+                }).join(', ');
                 h += `<tr>
-                    <td><b>${p.ma_ct}</b></td><td>${p.ten_ct}</td><td>${p.ma_cty||''}</td><td>${p.dia_diem||''}</td><td>${p.chu_dau_tu||''}</td><td>${p.trang_thai||''}</td>
+                    <td><b>${p.ma_ct}</b></td><td>${p.ten_ct}</td><td>${companyLabels}</td><td>${p.dia_diem||''}</td><td>${p.chu_dau_tu||''}</td><td>${p.trang_thai||''}</td>
                     <td>
                         <button class="btn btn-sm btn-warning me-1" onclick="editProj('${p.ma_ct}')"><i class="fa-solid fa-pen"></i> Sửa</button>
                         <button class="btn btn-sm btn-danger" onclick="delProj('${p.ma_ct}')"><i class="fa-solid fa-trash"></i></button>
@@ -421,13 +441,13 @@
                 </tr>`;
             });
             document.getElementById('tbl-project').innerHTML = h;
-        });
+        }
     }
     function saveProject() {
         const body = {
             ma_ct: document.getElementById('p-id').value,
             ten_ct: document.getElementById('p-name').value,
-            ma_cty: document.getElementById('p-cid').value,
+            ma_cty_list: Array.from(document.getElementById('p-cids').selectedOptions).map(option => option.value),
             dia_diem: document.getElementById('p-loc').value,
             chu_dau_tu: document.getElementById('p-owner').value,
             trang_thai: document.getElementById('p-status').value
@@ -443,7 +463,10 @@
             document.getElementById('p-id').value = p.ma_ct;
             document.getElementById('p-id').disabled = true;
             document.getElementById('p-name').value = p.ten_ct;
-            document.getElementById('p-cid').value = p.ma_cty || '';
+            const selectedCompanyIds = p.ma_cty_list || (p.ma_cty ? [p.ma_cty] : []);
+            Array.from(document.getElementById('p-cids').options).forEach(option => {
+                option.selected = selectedCompanyIds.includes(option.value);
+            });
             document.getElementById('p-loc').value = p.dia_diem || '';
             document.getElementById('p-owner').value = p.chu_dau_tu || '';
             document.getElementById('p-status').value = p.trang_thai || '';
@@ -452,6 +475,7 @@
     function resetFormProject() {
         document.getElementById('p-id').disabled = false;
         document.getElementById('form-project').reset();
+        Array.from(document.getElementById('p-cids').options).forEach(option => option.selected = false);
     }
     function delProj(id) {
         if(confirm("Xóa công trình này?")) fetch('/api/project/'+id, {method:'DELETE'}).then(()=>loadProject());
