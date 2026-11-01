@@ -54,8 +54,35 @@ def init_db():
                 dia_diem TEXT,
                 chu_dau_tu VARCHAR(255),
                 trang_thai VARCHAR(100),
-                ma_cty VARCHAR(50) REFERENCES company(ma_cty) ON DELETE CASCADE
+                ma_cty VARCHAR(50)
             );
+        ''')
+
+        # Giữ cột ma_cty cũ để tương thích, nhưng bỏ FK cũ để xóa một công ty
+        # không xóa cả công trình đang được nhiều công ty cùng liên kết.
+        cursor.execute('ALTER TABLE project DROP CONSTRAINT IF EXISTS project_ma_cty_fkey;')
+
+        # Bảng trung gian: một công ty có thể tham gia nhiều công trình
+        # và một công trình có thể liên kết với nhiều công ty.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS company_project (
+                ma_cty VARCHAR(50) NOT NULL
+                    REFERENCES company(ma_cty) ON DELETE CASCADE,
+                ma_ct VARCHAR(50) NOT NULL
+                    REFERENCES project(ma_ct) ON DELETE CASCADE,
+                vai_tro VARCHAR(100),
+                PRIMARY KEY (ma_cty, ma_ct)
+            );
+        ''')
+
+        # Chuyển liên kết cũ từ project.ma_cty sang bảng trung gian.
+        # Có thể chạy lặp lại an toàn khi ứng dụng khởi động.
+        cursor.execute('''
+            INSERT INTO company_project (ma_cty, ma_ct)
+            SELECT ma_cty, ma_ct
+            FROM project
+            WHERE ma_cty IS NOT NULL
+            ON CONFLICT (ma_cty, ma_ct) DO NOTHING;
         ''')
 
         # Bảng Hạng mục
@@ -197,7 +224,16 @@ def api_project():
     conn = get_db()
     cursor = conn.cursor()
     if request.method == 'POST':
-        data = request.json
+        data = request.json or {}
+        # Hỗ trợ cả giao diện mới (danh sách) và dữ liệu cũ (một ma_cty).
+        company_ids = data.get('ma_cty_list')
+        if company_ids is None:
+            legacy_company_id = data.get('ma_cty')
+            company_ids = [legacy_company_id] if legacy_company_id else []
+        company_ids = list(dict.fromkeys(cid for cid in company_ids if cid))
+
+        # Giữ ma_cty cũ với công ty đầu tiên để tương thích dữ liệu/API cũ.
+        legacy_company_id = company_ids[0] if company_ids else data.get('ma_cty')
         cursor.execute('''
             INSERT INTO project (ma_ct, ten_ct, dia_diem, chu_dau_tu, trang_thai, ma_cty)
             VALUES (%s, %s, %s, %s, %s, %s)
@@ -208,13 +244,32 @@ def api_project():
                 trang_thai = EXCLUDED.trang_thai,
                 ma_cty = EXCLUDED.ma_cty;
         ''', (data.get('ma_ct'), data.get('ten_ct'), data.get('dia_diem'), data.get('chu_dau_tu'),
-              data.get('trang_thai'), data.get('ma_cty')))
+              data.get('trang_thai'), legacy_company_id))
+
+        # Cập nhật các liên kết n–m cho công trình.
+        cursor.execute('DELETE FROM company_project WHERE ma_ct = %s;', (data.get('ma_ct'),))
+        for company_id in company_ids:
+            cursor.execute('''
+                INSERT INTO company_project (ma_cty, ma_ct)
+                VALUES (%s, %s)
+                ON CONFLICT (ma_cty, ma_ct) DO NOTHING;
+            ''', (company_id, data.get('ma_ct')))
         conn.commit()
         cursor.close()
         conn.close()
         return jsonify({'success': True})
     else:
-        cursor.execute('SELECT * FROM project;')
+        cursor.execute('''
+            SELECT p.*,
+                   COALESCE(
+                       ARRAY_AGG(cp.ma_cty) FILTER (WHERE cp.ma_cty IS NOT NULL),
+                       ARRAY[]::VARCHAR[]
+                   ) AS ma_cty_list
+            FROM project p
+            LEFT JOIN company_project cp ON cp.ma_ct = p.ma_ct
+            GROUP BY p.ma_ct
+            ORDER BY p.ma_ct;
+        ''')
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -288,7 +343,8 @@ def api_search():
                i.tien_do
         FROM item i
         JOIN project p ON i.ma_ct = p.ma_ct
-        WHERE p.ma_cty = %s;
+        JOIN company_project cp ON cp.ma_ct = p.ma_ct
+        WHERE cp.ma_cty = %s;
     '''
     cursor.execute(query, (ma_cty,))
     rows = cursor.fetchall()
